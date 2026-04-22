@@ -22,8 +22,10 @@ type FoundWord = {
 };
 
 const GRID_SIZE = 30;
-const SPAWN_DELAY_MS = 3000;
+const DEFAULT_SPAWN_DELAY_MS = 3000;
 const DEFAULT_MOVE_SPEED_MS = 600;
+const MIN_SPAWN_DELAY_MS = 500;
+const MAX_SPAWN_DELAY_MS = 6000;
 const MIN_MOVE_SPEED_MS = 400;
 const MAX_MOVE_SPEED_MS = 5000;
 const COUNTDOWN_INTERVAL_MS = 100;
@@ -248,7 +250,8 @@ export default function App() {
   const [activeAgents, setActiveAgents] = useState<Agent[]>([]);
   const [running, setRunning] = useState(true);
   const [gameEnded, setGameEnded] = useState(false);
-  const [spawnCountdown, setSpawnCountdown] = useState(SPAWN_DELAY_MS);
+  const [spawnDelayMs, setSpawnDelayMs] = useState(DEFAULT_SPAWN_DELAY_MS);
+  const [spawnCountdown, setSpawnCountdown] = useState(DEFAULT_SPAWN_DELAY_MS);
   const [moveSpeedMs, setMoveSpeedMs] = useState(DEFAULT_MOVE_SPEED_MS);
   const [score, setScore] = useState(0);
   const [words, setWords] = useState<FoundWord[]>([]);
@@ -398,7 +401,8 @@ export default function App() {
     setActiveAgents([]);
     setRunning(true);
     setGameEnded(false);
-    setSpawnCountdown(SPAWN_DELAY_MS);
+    setSpawnDelayMs(DEFAULT_SPAWN_DELAY_MS);
+    setSpawnCountdown(DEFAULT_SPAWN_DELAY_MS);
     setMoveSpeedMs(DEFAULT_MOVE_SPEED_MS);
     setScore(0);
     setWords([]);
@@ -447,7 +451,7 @@ export default function App() {
   useEffect(() => {
     if (!running || gameEnded || freeCells === 0) return;
 
-    setSpawnCountdown(SPAWN_DELAY_MS);
+    setSpawnCountdown(spawnDelayMs);
 
     const countdownTimer = window.setInterval(() => {
       setSpawnCountdown((prev) => Math.max(0, prev - COUNTDOWN_INTERVAL_MS));
@@ -461,14 +465,14 @@ export default function App() {
       );
       const spawnPoint = getSpawnPoint(latestGoal, latestGrid);
       if (!spawnPoint) {
-        setSpawnCountdown(SPAWN_DELAY_MS);
+        setSpawnCountdown(spawnDelayMs);
         setSpawnCycle((value) => value + 1);
         return;
       }
 
       const { pos, side } = spawnPoint;
       if (occupied.has(keyOf(pos))) {
-        setSpawnCountdown(SPAWN_DELAY_MS);
+        setSpawnCountdown(spawnDelayMs);
         setSpawnCycle((value) => value + 1);
         return;
       }
@@ -484,15 +488,15 @@ export default function App() {
       ]);
       nextAgentId.current += 1;
       setSpawnedCount((value) => value + 1);
-      setSpawnCountdown(SPAWN_DELAY_MS);
+      setSpawnCountdown(spawnDelayMs);
       setSpawnCycle((value) => value + 1);
-    }, SPAWN_DELAY_MS);
+    }, spawnDelayMs);
 
     return () => {
       window.clearInterval(countdownTimer);
       window.clearTimeout(spawnTimer);
     };
-  }, [running, gameEnded, freeCells, spawnCycle]);
+  }, [running, gameEnded, freeCells, spawnCycle, spawnDelayMs]);
 
   useEffect(() => {
     if (!running || gameEnded || activeAgents.length === 0) return;
@@ -595,6 +599,18 @@ export default function App() {
               Reset
             </button>
             <label className="speed-control">
+              <span>Entry interval</span>
+              <input
+                type="range"
+                min={MIN_SPAWN_DELAY_MS}
+                max={MAX_SPAWN_DELAY_MS}
+                step={100}
+                value={spawnDelayMs}
+                onChange={(event) => setSpawnDelayMs(Number(event.target.value))}
+              />
+              <strong>{(spawnDelayMs / 1000).toFixed(1)}s per new letter</strong>
+            </label>
+            <label className="speed-control">
               <span>Letter speed</span>
               <input
                 type="range"
@@ -660,10 +676,10 @@ export default function App() {
 
           <section className="panel copy-panel">
             <p>
-              A new letter enters every 3 seconds and every live letter keeps moving
-              toward your cursor on its own timer. Settled letters become obstacles,
-              so later letters must route around them or lock onto the nearest
-              reachable cell.
+              New letters enter on their own timer and every live letter keeps
+              moving toward your cursor on a separate speed timer. Settled letters
+              become obstacles, so later letters must route around them or lock
+              onto the nearest reachable cell.
             </p>
           </section>
         </section>
@@ -725,8 +741,9 @@ export default function App() {
             <ul className="detail-list">
               <li>Click any cell to move the cursor there.</li>
               <li>Use arrow keys to nudge the cursor.</li>
+              <li>Use the entry slider to control how often new letters appear.</li>
               <li>Use the speed slider to set how long each letter takes per block.</li>
-              <li>A new letter enters every 3 seconds from the top, right, bottom, or left edge.</li>
+              <li>New letters enter from the top, right, bottom, or left edge.</li>
               <li>Locked letters become obstacles for future letters.</li>
               <li>End the game manually or fill the board.</li>
             </ul>

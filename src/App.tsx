@@ -12,7 +12,6 @@ type Agent = {
   letter: string;
   pos: Pos;
   spawnSide: "top" | "right" | "bottom" | "left";
-  settled: boolean;
 };
 
 type FoundWord = {
@@ -23,8 +22,8 @@ type FoundWord = {
 };
 
 const GRID_SIZE = 30;
-const SPAWN_DELAY_MS = 900;
-const DEFAULT_MOVE_SPEED_MS = 3000;
+const SPAWN_DELAY_MS = 3000;
+const DEFAULT_MOVE_SPEED_MS = 600;
 const MIN_MOVE_SPEED_MS = 400;
 const MAX_MOVE_SPEED_MS = 5000;
 const COUNTDOWN_INTERVAL_MS = 100;
@@ -246,7 +245,7 @@ function findWords(grid: Cell[][], dictionary: Set<string>): FoundWord[] {
 export default function App() {
   const [grid, setGrid] = useState<Cell[][]>(() => makeEmptyGrid());
   const [goal, setGoal] = useState<Pos>({ r: 14, c: 14 });
-  const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
+  const [activeAgents, setActiveAgents] = useState<Agent[]>([]);
   const [running, setRunning] = useState(true);
   const [gameEnded, setGameEnded] = useState(false);
   const [spawnCountdown, setSpawnCountdown] = useState(SPAWN_DELAY_MS);
@@ -255,13 +254,17 @@ export default function App() {
   const [words, setWords] = useState<FoundWord[]>([]);
   const [dictionary, setDictionary] = useState<Set<string> | null>(null);
   const [dictionaryError, setDictionaryError] = useState<string | null>(null);
+  const [wordDescriptions, setWordDescriptions] = useState<Record<string, string>>({});
+  const [descriptionStatus, setDescriptionStatus] = useState<"idle" | "loading" | "ready">(
+    "idle",
+  );
   const [spawnCycle, setSpawnCycle] = useState(0);
   const [spawnedCount, setSpawnedCount] = useState(0);
   const [settledCount, setSettledCount] = useState(0);
-  const [showCost, setShowCost] = useState(false);
   const nextAgentId = useRef(1);
   const gridRef = useRef(grid);
   const goalRef = useRef(goal);
+  const activeAgentsRef = useRef(activeAgents);
 
   useEffect(() => {
     gridRef.current = grid;
@@ -270,6 +273,10 @@ export default function App() {
   useEffect(() => {
     goalRef.current = goal;
   }, [goal]);
+
+  useEffect(() => {
+    activeAgentsRef.current = activeAgents;
+  }, [activeAgents]);
 
   const freeCells = useMemo(() => {
     let free = 0;
@@ -334,20 +341,72 @@ export default function App() {
     setScore(found.length);
   }, [dictionary, gameEnded, grid]);
 
+  useEffect(() => {
+    if (!gameEnded || words.length === 0) {
+      setWordDescriptions({});
+      setDescriptionStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    const uniqueWords = Array.from(new Set(words.map((word) => word.word)));
+    setDescriptionStatus("loading");
+
+    async function loadDescriptions() {
+      const entries = await Promise.all(
+        uniqueWords.map(async (word) => {
+          try {
+            const response = await fetch(
+              `https://api.dictionaryapi.dev/api/v2/entries/en/${word.toLowerCase()}`,
+            );
+            if (!response.ok) {
+              return [word, "Description unavailable."] as const;
+            }
+
+            const payload = (await response.json()) as Array<{
+              meanings?: Array<{ definitions?: Array<{ definition?: string }> }>;
+            }>;
+
+            const definition = payload
+              .flatMap((entry) => entry.meanings ?? [])
+              .flatMap((meaning) => meaning.definitions ?? [])
+              .map((item) => item.definition?.trim())
+              .find(Boolean);
+
+            return [word, definition ?? "Description unavailable."] as const;
+          } catch {
+            return [word, "Description unavailable."] as const;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setWordDescriptions(Object.fromEntries(entries));
+      setDescriptionStatus("ready");
+    }
+
+    void loadDescriptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gameEnded, words]);
+
   const resetGame = useCallback(() => {
     setGrid(makeEmptyGrid());
     setGoal({ r: 14, c: 14 });
-    setActiveAgent(null);
+    setActiveAgents([]);
     setRunning(true);
     setGameEnded(false);
     setSpawnCountdown(SPAWN_DELAY_MS);
     setMoveSpeedMs(DEFAULT_MOVE_SPEED_MS);
     setScore(0);
     setWords([]);
+    setWordDescriptions({});
+    setDescriptionStatus("idle");
     setSpawnCycle(0);
     setSpawnedCount(0);
     setSettledCount(0);
-    setShowCost(false);
     nextAgentId.current = 1;
   }, []);
 
@@ -386,7 +445,7 @@ export default function App() {
   }, [gameEnded]);
 
   useEffect(() => {
-    if (!running || gameEnded || activeAgent || freeCells === 0) return;
+    if (!running || gameEnded || freeCells === 0) return;
 
     setSpawnCountdown(SPAWN_DELAY_MS);
 
@@ -397,6 +456,9 @@ export default function App() {
     const spawnTimer = window.setTimeout(() => {
       const latestGrid = gridRef.current;
       const latestGoal = goalRef.current;
+      const occupied = new Set(
+        activeAgentsRef.current.map((agent) => keyOf(agent.pos)),
+      );
       const spawnPoint = getSpawnPoint(latestGoal, latestGrid);
       if (!spawnPoint) {
         setSpawnCountdown(SPAWN_DELAY_MS);
@@ -405,86 +467,95 @@ export default function App() {
       }
 
       const { pos, side } = spawnPoint;
+      if (occupied.has(keyOf(pos))) {
+        setSpawnCountdown(SPAWN_DELAY_MS);
+        setSpawnCycle((value) => value + 1);
+        return;
+      }
 
-      setActiveAgent({
-        id: nextAgentId.current,
-        letter: randomLetter(),
-        pos,
-        spawnSide: side,
-        settled: false,
-      });
+      setActiveAgents((current) => [
+        ...current,
+        {
+          id: nextAgentId.current,
+          letter: randomLetter(),
+          pos,
+          spawnSide: side,
+        },
+      ]);
       nextAgentId.current += 1;
       setSpawnedCount((value) => value + 1);
-      setSpawnCountdown(0);
+      setSpawnCountdown(SPAWN_DELAY_MS);
+      setSpawnCycle((value) => value + 1);
     }, SPAWN_DELAY_MS);
 
     return () => {
       window.clearInterval(countdownTimer);
       window.clearTimeout(spawnTimer);
     };
-  }, [running, gameEnded, activeAgent, freeCells, spawnCycle]);
+  }, [running, gameEnded, freeCells, spawnCycle]);
 
   useEffect(() => {
-    if (!running || gameEnded || !activeAgent) return;
+    if (!running || gameEnded || activeAgents.length === 0) return;
     if (!targetCell || !costField) return;
 
     const moveTimer = window.setTimeout(() => {
-      const hereCost = costField[activeAgent.pos.r][activeAgent.pos.c];
-      const reachable = Number.isFinite(hereCost) && hereCost < 1e9;
+      const nextGrid = cloneGrid(grid);
+      const settledAgents: Agent[] = [];
+      const occupiedNext = new Set<string>();
 
-      if (!reachable) {
-        const fallback = bestFallbackCell(grid, activeAgent.pos, targetCell, costField);
-        const nextGrid = cloneGrid(grid);
-        nextGrid[fallback.r][fallback.c] = { letter: activeAgent.letter, locked: true };
+      const remainingAgents = activeAgents
+        .slice()
+        .sort((a, b) => a.id - b.id)
+        .flatMap((agent) => {
+          const hereCost = costField[agent.pos.r][agent.pos.c];
+          const reachable = Number.isFinite(hereCost) && hereCost < 1e9;
+
+          if (!reachable) {
+            const fallback = bestFallbackCell(nextGrid, agent.pos, targetCell, costField);
+            nextGrid[fallback.r][fallback.c] = { letter: agent.letter, locked: true };
+            settledAgents.push(agent);
+            return [];
+          }
+
+          if (agent.pos.r === targetCell.r && agent.pos.c === targetCell.c) {
+            nextGrid[targetCell.r][targetCell.c] = {
+              letter: agent.letter,
+              locked: true,
+            };
+            settledAgents.push(agent);
+            return [];
+          }
+
+          const step = nextStepToward(costField, agent.pos);
+          if (!step) {
+            nextGrid[agent.pos.r][agent.pos.c] = {
+              letter: agent.letter,
+              locked: true,
+            };
+            settledAgents.push(agent);
+            return [];
+          }
+
+          const nextKey = keyOf(step);
+          if (occupiedNext.has(nextKey) || nextGrid[step.r][step.c].locked) {
+            occupiedNext.add(keyOf(agent.pos));
+            return [agent];
+          }
+
+          occupiedNext.add(nextKey);
+          return [{ ...agent, pos: step }];
+        });
+
+      if (settledAgents.length > 0) {
         setGrid(nextGrid);
-        setActiveAgent(null);
-        setSettledCount((value) => value + 1);
-        return;
+        setSettledCount((value) => value + settledAgents.length);
       }
 
-      if (activeAgent.pos.r === targetCell.r && activeAgent.pos.c === targetCell.c) {
-        const nextGrid = cloneGrid(grid);
-        nextGrid[targetCell.r][targetCell.c] = {
-          letter: activeAgent.letter,
-          locked: true,
-        };
-        setGrid(nextGrid);
-        setActiveAgent(null);
-        setSettledCount((value) => value + 1);
-        return;
-      }
-
-      const step = nextStepToward(costField, activeAgent.pos);
-      if (!step) {
-        const nextGrid = cloneGrid(grid);
-        nextGrid[activeAgent.pos.r][activeAgent.pos.c] = {
-          letter: activeAgent.letter,
-          locked: true,
-        };
-        setGrid(nextGrid);
-        setActiveAgent(null);
-        setSettledCount((value) => value + 1);
-        return;
-      }
-
-      setActiveAgent((agent) => (agent ? { ...agent, pos: step } : agent));
+      setActiveAgents(remainingAgents);
     }, moveSpeedMs);
 
     return () => window.clearTimeout(moveTimer);
-  }, [activeAgent, running, gameEnded, grid, targetCell, costField, moveSpeedMs]);
-
-  const heat = useCallback(
-    (r: number, c: number) => {
-      if (!showCost || !costField) return undefined;
-      const value = costField[r][c];
-      if (!Number.isFinite(value) || value >= 1e9) return "rgba(15, 23, 42, 0.92)";
-      const max = GRID_SIZE * 2;
-      const t = Math.max(0, Math.min(1, value / max));
-      const alpha = 0.15 + t * 0.45;
-      return `rgba(59, 130, 246, ${alpha})`;
-    },
-    [showCost, costField],
-  );
+  }, [activeAgents, running, gameEnded, grid, targetCell, costField, moveSpeedMs]);
 
   return (
     <div className="app-shell">
@@ -523,14 +594,6 @@ export default function App() {
             >
               Reset
             </button>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={showCost}
-                onChange={(event) => setShowCost(event.target.checked)}
-              />
-              <span>Show path cost</span>
-            </label>
             <label className="speed-control">
               <span>Letter speed</span>
               <input
@@ -553,9 +616,11 @@ export default function App() {
               {Array.from({ length: GRID_SIZE }).map((_, r) =>
                 Array.from({ length: GRID_SIZE }).map((__, c) => {
                   const cell = grid[r][c];
+                  const agentHere = activeAgents.find(
+                    (agent) => agent.pos.r === r && agent.pos.c === c,
+                  );
                   const isGoal = goal.r === r && goal.c === c;
                   const isTarget = targetCell?.r === r && targetCell?.c === c;
-                  const isAgent = activeAgent?.pos.r === r && activeAgent?.pos.c === c;
                   const lineOn = r === goal.r || c === goal.c;
 
                   return (
@@ -565,7 +630,7 @@ export default function App() {
                       onClick={() => setGoal({ r, c })}
                       className="board-cell"
                       style={{
-                        background: isAgent
+                        background: agentHere
                           ? "#f59e0b"
                           : cell.locked
                             ? "#334155"
@@ -573,14 +638,14 @@ export default function App() {
                               ? "#dc2626"
                               : lineOn
                                 ? "rgba(239, 68, 68, 0.12)"
-                                : heat(r, c) || "#e5e7eb",
+                                : "#e5e7eb",
                         color:
-                          cell.locked || isAgent || isGoal ? "#ffffff" : "#0f172a",
+                          cell.locked || agentHere || isGoal ? "#ffffff" : "#0f172a",
                       }}
                       aria-label={`Cell ${r}, ${c}`}
                     >
-                      {cell.letter ?? (isAgent ? activeAgent?.letter : "")}
-                      {isGoal && !cell.letter && !isAgent ? (
+                      {cell.letter ?? agentHere?.letter ?? ""}
+                      {isGoal && !cell.letter && !agentHere ? (
                         <span className="goal-indicator" />
                       ) : null}
                       {isTarget && !isGoal ? (
@@ -595,9 +660,10 @@ export default function App() {
 
           <section className="panel copy-panel">
             <p>
-              Letters enter from the board edge and move one block at a time toward
-              your cursor. Settled letters become obstacles, so later letters must
-              route around them or lock onto the nearest reachable cell.
+              A new letter enters every 3 seconds and every live letter keeps moving
+              toward your cursor on its own timer. Settled letters become obstacles,
+              so later letters must route around them or lock onto the nearest
+              reachable cell.
             </p>
           </section>
         </section>
@@ -637,7 +703,7 @@ export default function App() {
               </div>
               <div>
                 <span className="meta-label">Active letter:</span>{" "}
-                {activeAgent ? `${activeAgent.letter} from ${activeAgent.spawnSide}` : "none"}
+                {activeAgents.length === 0 ? "none" : `${activeAgents.length} moving`}
               </div>
               <div>
                 <span className="meta-label">Scoring:</span>{" "}
@@ -646,6 +712,10 @@ export default function App() {
                   : dictionary
                     ? "1 point per valid word"
                     : "loading word directory"}
+              </div>
+              <div>
+                <span className="meta-label">Letter set:</span> all 26 English letters,
+                weighted by frequency
               </div>
             </div>
           </section>
@@ -656,7 +726,7 @@ export default function App() {
               <li>Click any cell to move the cursor there.</li>
               <li>Use arrow keys to nudge the cursor.</li>
               <li>Use the speed slider to set how long each letter takes per block.</li>
-              <li>One letter enters at a time from the top, right, bottom, or left edge.</li>
+              <li>A new letter enters every 3 seconds from the top, right, bottom, or left edge.</li>
               <li>Locked letters become obstacles for future letters.</li>
               <li>End the game manually or fill the board.</li>
             </ul>
@@ -664,6 +734,9 @@ export default function App() {
 
           <section className="panel words-panel">
             <h2>Found Words {gameEnded ? "(final)" : "(shown after ending)"}</h2>
+            {gameEnded && words.length > 0 && descriptionStatus === "loading" ? (
+              <p className="empty-state">Loading word descriptions...</p>
+            ) : null}
             {words.length === 0 ? (
               <p className="empty-state">
                 {dictionaryError
@@ -683,6 +756,7 @@ export default function App() {
                       <span>
                         {word.direction} · start ({word.start.r}, {word.start.c}) · 1 point
                       </span>
+                      <p>{wordDescriptions[word.word] ?? "Description unavailable."}</p>
                     </article>
                   ))}
               </div>

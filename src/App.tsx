@@ -20,146 +20,16 @@ type FoundWord = {
   start: Pos;
   direction: "horizontal" | "vertical";
   length: number;
-  points: number;
 };
 
 const GRID_SIZE = 30;
-const TICK_MS = 220;
-const SPAWN_MS = 900;
+const SPAWN_DELAY_MS = 900;
+const DEFAULT_MOVE_SPEED_MS = 3000;
+const MIN_MOVE_SPEED_MS = 400;
+const MAX_MOVE_SPEED_MS = 5000;
+const COUNTDOWN_INTERVAL_MS = 100;
 const ALPHABET =
   "EEEEEEEEEEEEAAAAAAAARRRRRRIIIIIIOOOOOTTNNNSSSLLLCCDDUUMMBBFFGGHHPPVVWWYYKJXQZ";
-
-const DICTIONARY = new Set([
-  "CAT",
-  "DOG",
-  "SUN",
-  "MOON",
-  "STAR",
-  "WORD",
-  "GRID",
-  "GAME",
-  "PATH",
-  "FLOW",
-  "GOAL",
-  "CODE",
-  "BOOK",
-  "TREE",
-  "BIRD",
-  "FISH",
-  "FIRE",
-  "WATER",
-  "EARTH",
-  "WIND",
-  "STONE",
-  "LIGHT",
-  "DARK",
-  "RING",
-  "LINE",
-  "POINT",
-  "MATH",
-  "ROUTE",
-  "ROUTER",
-  "TRACE",
-  "TRACK",
-  "STACK",
-  "BLOCK",
-  "CELL",
-  "CROSS",
-  "ARROW",
-  "CURSOR",
-  "BOARD",
-  "MOVE",
-  "MOVER",
-  "ALPHA",
-  "BETA",
-  "DELTA",
-  "OMEGA",
-  "TIME",
-  "TIMER",
-  "SCORE",
-  "PLAYER",
-  "PLAY",
-  "PLAN",
-  "PLANE",
-  "TRAIN",
-  "BOAT",
-  "ROAD",
-  "RIVER",
-  "HOUSE",
-  "HOME",
-  "ROOM",
-  "DOOR",
-  "WALL",
-  "NOTE",
-  "TONE",
-  "SAND",
-  "SOUND",
-  "FIELD",
-  "VECTOR",
-  "GRAPH",
-  "SEARCH",
-  "COST",
-  "HEAT",
-  "BRAIN",
-  "HEART",
-  "HAND",
-  "EYE",
-  "FACE",
-  "APPLE",
-  "GRAPE",
-  "PEAR",
-  "BERRY",
-  "MANGO",
-  "LEMON",
-  "MELON",
-  "BANANA",
-  "KIWI",
-  "PLUM",
-  "PEACH",
-  "CHAIR",
-  "TABLE",
-  "PHONE",
-  "CLOCK",
-  "MOUSE",
-  "BOARD",
-  "SCREEN",
-  "PIXEL",
-  "REACT",
-  "STATE",
-  "HOOK",
-  "INPUT",
-  "OUTPUT",
-  "LEVEL",
-  "LASER",
-  "SOLAR",
-  "LUNAR",
-  "NOVA",
-  "ATOM",
-  "ION",
-  "METAL",
-  "WAVE",
-  "SIGNAL",
-  "CHAIN",
-  "LINK",
-  "NODE",
-  "NET",
-  "WIRE",
-  "VIA",
-  "LAYER",
-  "FRONT",
-  "BACK",
-  "SHIFT",
-  "SPACE",
-  "RANDOM",
-  "TARGET",
-  "AGENT",
-  "AGENTS",
-  "LOGIC",
-  "ARRAY",
-  "QUEUE",
-  "BFS",
-  "DIJKSTRA",
-]);
 
 function makeEmptyGrid(): Cell[][] {
   return Array.from({ length: GRID_SIZE }, () =>
@@ -183,23 +53,23 @@ function randomLetter() {
   return ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
 }
 
-function scoreForLength(length: number) {
-  if (length <= 2) return 0;
-  if (length === 3) return 100;
-  if (length === 4) return 250;
-  if (length === 5) return 450;
-  if (length === 6) return 700;
-  return 1000 + (length - 7) * 250;
-}
+function getSpawnPoint(
+  goal: Pos,
+  grid: Cell[][],
+): { pos: Pos; side: Agent["spawnSide"] } | null {
+  const candidates: Array<{ pos: Pos; side: Agent["spawnSide"] }> = [
+    { pos: { r: 0, c: goal.c }, side: "top" },
+    { pos: { r: goal.r, c: GRID_SIZE - 1 }, side: "right" },
+    { pos: { r: GRID_SIZE - 1, c: goal.c }, side: "bottom" },
+    { pos: { r: goal.r, c: 0 }, side: "left" },
+  ];
 
-function getSpawnPoint(goal: Pos): { pos: Pos; side: Agent["spawnSide"] } {
-  const sideIndex = Math.floor(Math.random() * 4);
-  const side = ["top", "right", "bottom", "left"][sideIndex] as Agent["spawnSide"];
+  for (let i = candidates.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
 
-  if (side === "top") return { pos: { r: 0, c: goal.c }, side };
-  if (side === "bottom") return { pos: { r: GRID_SIZE - 1, c: goal.c }, side };
-  if (side === "left") return { pos: { r: goal.r, c: 0 }, side };
-  return { pos: { r: goal.r, c: GRID_SIZE - 1 }, side };
+  return candidates.find(({ pos }) => !grid[pos.r][pos.c].locked) ?? null;
 }
 
 function nearestAvailableTarget(grid: Cell[][], goal: Pos): Pos | null {
@@ -317,7 +187,7 @@ function nextStepToward(cost: number[][], pos: Pos): Pos | null {
   return best;
 }
 
-function findWords(grid: Cell[][]): FoundWord[] {
+function findWords(grid: Cell[][], dictionary: Set<string>): FoundWord[] {
   const found: FoundWord[] = [];
   const seen = new Set<string>();
 
@@ -336,7 +206,7 @@ function findWords(grid: Cell[][]): FoundWord[] {
         for (let i = 0; i < segment.length; i += 1) {
           for (let j = i + 3; j <= segment.length; j += 1) {
             const word = segment.slice(i, j);
-            if (!DICTIONARY.has(word)) continue;
+            if (!dictionary.has(word)) continue;
             const actualStart = start + i;
             const key = `${direction}:${fixedIndex}:${actualStart}:${word}`;
             if (seen.has(key)) continue;
@@ -349,7 +219,6 @@ function findWords(grid: Cell[][]): FoundWord[] {
                   : { r: actualStart, c: fixedIndex },
               direction,
               length: word.length,
-              points: scoreForLength(word.length),
             });
           }
         }
@@ -380,14 +249,27 @@ export default function App() {
   const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
   const [running, setRunning] = useState(true);
   const [gameEnded, setGameEnded] = useState(false);
-  const [spawnCountdown, setSpawnCountdown] = useState(SPAWN_MS);
+  const [spawnCountdown, setSpawnCountdown] = useState(SPAWN_DELAY_MS);
+  const [moveSpeedMs, setMoveSpeedMs] = useState(DEFAULT_MOVE_SPEED_MS);
   const [score, setScore] = useState(0);
   const [words, setWords] = useState<FoundWord[]>([]);
+  const [dictionary, setDictionary] = useState<Set<string> | null>(null);
+  const [dictionaryError, setDictionaryError] = useState<string | null>(null);
+  const [spawnCycle, setSpawnCycle] = useState(0);
   const [spawnedCount, setSpawnedCount] = useState(0);
   const [settledCount, setSettledCount] = useState(0);
   const [showCost, setShowCost] = useState(false);
-  const [tickCount, setTickCount] = useState(0);
   const nextAgentId = useRef(1);
+  const gridRef = useRef(grid);
+  const goalRef = useRef(goal);
+
+  useEffect(() => {
+    gridRef.current = grid;
+  }, [grid]);
+
+  useEffect(() => {
+    goalRef.current = goal;
+  }, [goal]);
 
   const freeCells = useMemo(() => {
     let free = 0;
@@ -408,10 +290,49 @@ export default function App() {
   const endGame = useCallback(() => {
     setRunning(false);
     setGameEnded(true);
-    const found = findWords(grid);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDictionary() {
+      try {
+        const response = await fetch("/word-directory.txt");
+        if (!response.ok) {
+          throw new Error(`Dictionary request failed with ${response.status}`);
+        }
+
+        const text = await response.text();
+        if (cancelled) return;
+
+        const loadedWords = text
+          .split("\n")
+          .map((word) => word.trim())
+          .filter(Boolean);
+
+        setDictionary(new Set(loadedWords));
+        setDictionaryError(null);
+      } catch (error) {
+        if (cancelled) return;
+        setDictionaryError(
+          error instanceof Error ? error.message : "Unable to load word directory.",
+        );
+      }
+    }
+
+    void loadDictionary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!gameEnded || !dictionary) return;
+    const found = findWords(grid, dictionary);
     setWords(found);
-    setScore(found.reduce((sum, word) => sum + word.points, 0));
-  }, [grid]);
+    setScore(found.length);
+  }, [dictionary, gameEnded, grid]);
 
   const resetGame = useCallback(() => {
     setGrid(makeEmptyGrid());
@@ -419,13 +340,14 @@ export default function App() {
     setActiveAgent(null);
     setRunning(true);
     setGameEnded(false);
-    setSpawnCountdown(SPAWN_MS);
+    setSpawnCountdown(SPAWN_DELAY_MS);
+    setMoveSpeedMs(DEFAULT_MOVE_SPEED_MS);
     setScore(0);
     setWords([]);
+    setSpawnCycle(0);
     setSpawnedCount(0);
     setSettledCount(0);
     setShowCost(false);
-    setTickCount(0);
     nextAgentId.current = 1;
   }, []);
 
@@ -464,79 +386,92 @@ export default function App() {
   }, [gameEnded]);
 
   useEffect(() => {
-    if (!running || gameEnded) return;
-    const timer = window.setInterval(() => {
-      setTickCount((value) => value + 1);
+    if (!running || gameEnded || activeAgent || freeCells === 0) return;
 
-      setSpawnCountdown((prev) => {
-        const next = prev - TICK_MS;
-        if (next > 0 || activeAgent || freeCells === 0) return next;
+    setSpawnCountdown(SPAWN_DELAY_MS);
 
-        const { pos, side } = getSpawnPoint(goal);
-        if (grid[pos.r][pos.c].locked) {
-          return SPAWN_MS;
-        }
+    const countdownTimer = window.setInterval(() => {
+      setSpawnCountdown((prev) => Math.max(0, prev - COUNTDOWN_INTERVAL_MS));
+    }, COUNTDOWN_INTERVAL_MS);
 
-        setActiveAgent({
-          id: nextAgentId.current,
-          letter: randomLetter(),
-          pos,
-          spawnSide: side,
-          settled: false,
-        });
-        nextAgentId.current += 1;
-        setSpawnedCount((value) => value + 1);
-        return SPAWN_MS;
+    const spawnTimer = window.setTimeout(() => {
+      const latestGrid = gridRef.current;
+      const latestGoal = goalRef.current;
+      const spawnPoint = getSpawnPoint(latestGoal, latestGrid);
+      if (!spawnPoint) {
+        setSpawnCountdown(SPAWN_DELAY_MS);
+        setSpawnCycle((value) => value + 1);
+        return;
+      }
+
+      const { pos, side } = spawnPoint;
+
+      setActiveAgent({
+        id: nextAgentId.current,
+        letter: randomLetter(),
+        pos,
+        spawnSide: side,
+        settled: false,
       });
-    }, TICK_MS);
+      nextAgentId.current += 1;
+      setSpawnedCount((value) => value + 1);
+      setSpawnCountdown(0);
+    }, SPAWN_DELAY_MS);
 
-    return () => window.clearInterval(timer);
-  }, [running, gameEnded, activeAgent, goal, grid, freeCells]);
+    return () => {
+      window.clearInterval(countdownTimer);
+      window.clearTimeout(spawnTimer);
+    };
+  }, [running, gameEnded, activeAgent, freeCells, spawnCycle]);
 
   useEffect(() => {
     if (!running || gameEnded || !activeAgent) return;
     if (!targetCell || !costField) return;
 
-    const hereCost = costField[activeAgent.pos.r][activeAgent.pos.c];
-    const reachable = Number.isFinite(hereCost) && hereCost < 1e9;
+    const moveTimer = window.setTimeout(() => {
+      const hereCost = costField[activeAgent.pos.r][activeAgent.pos.c];
+      const reachable = Number.isFinite(hereCost) && hereCost < 1e9;
 
-    if (!reachable) {
-      const fallback = bestFallbackCell(grid, activeAgent.pos, targetCell, costField);
-      const nextGrid = cloneGrid(grid);
-      nextGrid[fallback.r][fallback.c] = { letter: activeAgent.letter, locked: true };
-      setGrid(nextGrid);
-      setActiveAgent(null);
-      setSettledCount((value) => value + 1);
-      return;
-    }
+      if (!reachable) {
+        const fallback = bestFallbackCell(grid, activeAgent.pos, targetCell, costField);
+        const nextGrid = cloneGrid(grid);
+        nextGrid[fallback.r][fallback.c] = { letter: activeAgent.letter, locked: true };
+        setGrid(nextGrid);
+        setActiveAgent(null);
+        setSettledCount((value) => value + 1);
+        return;
+      }
 
-    if (activeAgent.pos.r === targetCell.r && activeAgent.pos.c === targetCell.c) {
-      const nextGrid = cloneGrid(grid);
-      nextGrid[targetCell.r][targetCell.c] = {
-        letter: activeAgent.letter,
-        locked: true,
-      };
-      setGrid(nextGrid);
-      setActiveAgent(null);
-      setSettledCount((value) => value + 1);
-      return;
-    }
+      if (activeAgent.pos.r === targetCell.r && activeAgent.pos.c === targetCell.c) {
+        const nextGrid = cloneGrid(grid);
+        nextGrid[targetCell.r][targetCell.c] = {
+          letter: activeAgent.letter,
+          locked: true,
+        };
+        setGrid(nextGrid);
+        setActiveAgent(null);
+        setSettledCount((value) => value + 1);
+        return;
+      }
 
-    const step = nextStepToward(costField, activeAgent.pos);
-    if (!step) {
-      const nextGrid = cloneGrid(grid);
-      nextGrid[activeAgent.pos.r][activeAgent.pos.c] = {
-        letter: activeAgent.letter,
-        locked: true,
-      };
-      setGrid(nextGrid);
-      setActiveAgent(null);
-      setSettledCount((value) => value + 1);
-      return;
-    }
+      const step = nextStepToward(costField, activeAgent.pos);
+      if (!step) {
+        const nextGrid = cloneGrid(grid);
+        nextGrid[activeAgent.pos.r][activeAgent.pos.c] = {
+          letter: activeAgent.letter,
+          locked: true,
+        };
+        setGrid(nextGrid);
+        setActiveAgent(null);
+        setSettledCount((value) => value + 1);
+        return;
+      }
 
-    setActiveAgent((agent) => (agent ? { ...agent, pos: step } : agent));
-  }, [activeAgent, running, gameEnded, grid, targetCell, costField]);
+      setActiveAgent((agent) => (agent ? { ...agent, pos: step } : agent));
+    }, moveSpeedMs);
+
+    return () => window.clearTimeout(moveTimer);
+  }, [activeAgent, running, gameEnded, grid, targetCell, costField, moveSpeedMs]);
 
   const heat = useCallback(
     (r: number, c: number) => {
@@ -558,10 +493,10 @@ export default function App() {
         <section className="main-column">
           <header className="hero panel">
             <p className="eyebrow">Netlify-ready Vite app</p>
-            <h1>Flowfield Word Game</h1>
+            <h1>Word Grid Game</h1>
             <p className="hero-copy">
-              Spawn letters from the board edge, steer the target cursor, and score
-              words from the maze your agents build.
+              Drop letters onto the board, steer the target cursor, and score every
+              valid word hidden inside each completed row or column.
             </p>
           </header>
 
@@ -594,7 +529,19 @@ export default function App() {
                 checked={showCost}
                 onChange={(event) => setShowCost(event.target.checked)}
               />
-              <span>Show flow cost</span>
+              <span>Show path cost</span>
+            </label>
+            <label className="speed-control">
+              <span>Letter speed</span>
+              <input
+                type="range"
+                min={MIN_MOVE_SPEED_MS}
+                max={MAX_MOVE_SPEED_MS}
+                step={100}
+                value={moveSpeedMs}
+                onChange={(event) => setMoveSpeedMs(Number(event.target.value))}
+              />
+              <strong>{(moveSpeedMs / 1000).toFixed(1)}s per block</strong>
             </label>
           </div>
 
@@ -648,10 +595,9 @@ export default function App() {
 
           <section className="panel copy-panel">
             <p>
-              Letters spawn from one of the four rays extending from the cursor to
-              the board edge, then follow a shared goal-directed cost field. Settled
-              letters become obstacles, so later letters route around them or lock
-              onto the nearest available reachable cell.
+              Letters enter from the board edge and move one block at a time toward
+              your cursor. Settled letters become obstacles, so later letters must
+              route around them or lock onto the nearest reachable cell.
             </p>
           </section>
         </section>
@@ -686,15 +632,20 @@ export default function App() {
                 {targetCell ? `(${targetCell.r}, ${targetCell.c})` : "none"}
               </div>
               <div>
-                <span className="meta-label">Tick:</span> {tickCount}
-              </div>
-              <div>
                 <span className="meta-label">Next spawn in:</span>{" "}
-                {Math.max(0, spawnCountdown)} ms
+                {(Math.max(0, spawnCountdown) / 1000).toFixed(1)} s
               </div>
               <div>
                 <span className="meta-label">Active letter:</span>{" "}
                 {activeAgent ? `${activeAgent.letter} from ${activeAgent.spawnSide}` : "none"}
+              </div>
+              <div>
+                <span className="meta-label">Scoring:</span>{" "}
+                {dictionaryError
+                  ? "word directory unavailable"
+                  : dictionary
+                    ? "1 point per valid word"
+                    : "loading word directory"}
               </div>
             </div>
           </section>
@@ -704,7 +655,8 @@ export default function App() {
             <ul className="detail-list">
               <li>Click any cell to move the cursor there.</li>
               <li>Use arrow keys to nudge the cursor.</li>
-              <li>One letter spawns at a time from the top, right, bottom, or left ray.</li>
+              <li>Use the speed slider to set how long each letter takes per block.</li>
+              <li>One letter enters at a time from the top, right, bottom, or left edge.</li>
               <li>Locked letters become obstacles for future letters.</li>
               <li>End the game manually or fill the board.</li>
             </ul>
@@ -713,18 +665,23 @@ export default function App() {
           <section className="panel words-panel">
             <h2>Found Words {gameEnded ? "(final)" : "(shown after ending)"}</h2>
             {words.length === 0 ? (
-              <p className="empty-state">No scored words yet.</p>
+              <p className="empty-state">
+                {dictionaryError
+                  ? "Word directory failed to load."
+                  : gameEnded && dictionary
+                    ? "No valid words found."
+                    : "Finish a round to see scored words."}
+              </p>
             ) : (
               <div className="word-list">
                 {words
                   .slice()
-                  .sort((a, b) => b.points - a.points || b.length - a.length)
+                  .sort((a, b) => b.length - a.length || a.word.localeCompare(b.word))
                   .map((word, index) => (
                     <article key={`${word.word}-${index}`} className="word-card">
                       <strong>{word.word}</strong>
                       <span>
-                        {word.direction} · start ({word.start.r}, {word.start.c}) ·{" "}
-                        {word.points} pts
+                        {word.direction} · start ({word.start.r}, {word.start.c}) · 1 point
                       </span>
                     </article>
                   ))}
